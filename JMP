@@ -1,0 +1,60 @@
+
+Names Default To Here(1);
+
+dt = Current Data Table();
+
+lotList = {};
+opLists = {};
+
+// 按原始行顺序遍历
+For(i = 1, i <= N Rows(dt), i++,
+
+    lot = Column(dt, "LOT")[i];
+    op = Column(dt, "OPERATION")[i];
+
+    If(!Is Missing(lot) & Char(lot) != "",
+
+        lot = Char(lot);
+
+        // 查找 LOT 是否已出现
+        idx = Contains(lotList, lot);
+
+        If(idx == 0,
+            Insert Into(lotList, lot);
+            Insert Into(opLists, {});
+            idx = N Items(lotList);
+        );
+
+        // OPERATION 去重并保持原始顺序
+        If(!Is Missing(op) & Char(op) != "",
+
+            op = Char(op);
+            ops = opLists[idx];
+
+            If(Contains(ops, op) == 0,
+                Insert Into(ops, op);
+                opLists[idx] = ops;
+            );
+        );
+    );
+);
+
+// 创建新的 Table
+out = New Table(
+    "LOT OPERATION Merged",
+    New Column("LOT", Character, Nominal),
+    New Column("OPERATION", Character, Nominal)
+);
+
+out << Add Rows(N Items(lotList));
+
+// 写入合并结果
+For(i = 1, i <= N Items(lotList), i++,
+
+    Column(out, "LOT")[i] = lotList[i];
+
+    Column(out, "OPERATION")[i] =
+        Concat Items(opLists[i], ";");
+);
+
+out << Bring Window To Front;
