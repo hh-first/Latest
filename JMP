@@ -1,60 +1,219 @@
 
 Names Default To Here(1);
 
+// =====================================
+// 1. USER SETTINGS
+// =====================================
+
+// 分组依据
+groupColumn = "LOT";
+
+// 合并分隔符
+separator = ";";
+// 例如 ";", "; ", ",", " | ", "\!N"
+
+// 是否去重：1=是，0=否
+removeDuplicates = 1;
+
+// 是否去除首尾空格：1=是，0=否
+trimSpaces = 1;
+
+// 是否忽略空白 LOT：1=是，0=否
+skipBlankLOT = 1;
+
+// 指定需要合并的列
+// {} = 自动合并其他所有列
+// {"OPERATION", "RECIPE"} = 只合并指定列
+mergeColumns = {};
+
+// 日期时间列（可选）
+// 若为空，则数值列直接转为文本
+dateColumns = {};
+dateFormat = "yyyy-mm-ddThh:mm:ss";
+
+// 新 Table 名称
+outputName = "LOT All Columns Merged";
+
+// =====================================
+// 2. GET SOURCE TABLE
+// =====================================
+
 dt = Current Data Table();
 
-lotList = {};
-opLists = {};
+allColumns = dt << Get Column Names("String");
 
-// 按原始行顺序遍历
-For(i = 1, i <= N Rows(dt), i++,
+If(Contains(allColumns, groupColumn) == 0,
+    Throw("Grouping column not found: " || groupColumn)
+);
 
-    lot = Column(dt, "LOT")[i];
-    op = Column(dt, "OPERATION")[i];
+// 自动选择其他所有列
+If(N Items(mergeColumns) == 0,
+    For(c = 1, c <= N Items(allColumns), c++,
+        If(allColumns[c] != groupColumn,
+            Insert Into(mergeColumns, allColumns[c]);
+        );
+    );
+);
 
-    If(!Is Missing(lot) & Char(lot) != "",
+// 验证列名
+For(c = 1, c <= N Items(mergeColumns), c++,
+    If(Contains(allColumns, mergeColumns[c]) == 0,
+        Throw("Column not found: " || mergeColumns[c])
+    );
+);
 
-        lot = Char(lot);
+// =====================================
+// 3. GROUP AND MERGE
+// =====================================
 
-        // 查找 LOT 是否已出现
-        idx = Contains(lotList, lot);
+// 保存 LOT 首次出现顺序
+lotOrder = {};
 
-        If(idx == 0,
-            Insert Into(lotList, lot);
-            Insert Into(opLists, {});
-            idx = N Items(lotList);
+// LOT -> group index
+lotMap = Associative Array();
+
+// 每个 LOT / 每列保存独立的值列表
+valueMap = Associative Array();
+
+For(r = 1, r <= N Rows(dt), r++,
+
+    rawLOT = Column(dt, groupColumn)[r];
+
+    If(Is Missing(rawLOT),
+        lot = "",
+        lot = Char(rawLOT)
+    );
+
+    If(trimSpaces == 1,
+        lot = Trim(lot)
+    );
+
+    If(!(skipBlankLOT == 1 & lot == ""),
+
+        // 首次出现的 LOT
+        If(!(lotMap << Contains Item(lot)),
+            Insert Into(lotOrder, lot);
+            lotMap[lot] = N Items(lotOrder);
         );
 
-        // OPERATION 去重并保持原始顺序
-        If(!Is Missing(op) & Char(op) != "",
+        groupIndex = lotMap[lot];
 
-            op = Char(op);
-            ops = opLists[idx];
+        // 遍历需要合并的列
+        For(c = 1, c <= N Items(mergeColumns), c++,
 
-            If(Contains(ops, op) == 0,
-                Insert Into(ops, op);
-                opLists[idx] = ops;
+            colName = mergeColumns[c];
+
+            If(colName != groupColumn,
+
+                rawValue = Column(dt, colName)[r];
+
+                If(!Is Missing(rawValue),
+
+                    // 日期时间特殊格式化
+                    If(Contains(dateColumns, colName) > 0,
+                        value = Format(
+                            rawValue,
+                            dateFormat
+                        ),
+                        value = Char(rawValue)
+                    );
+
+                    If(trimSpaces == 1,
+                        value = Trim(value)
+                    );
+
+                    If(value != "",
+
+                        // 唯一组合索引
+                        mapKey = Char(groupIndex)
+                            || "|"
+                            || Char(c);
+
+                        If(!(valueMap << Contains Item(mapKey)),
+                            valueMap[mapKey] = {};
+                        );
+
+                        values = valueMap[mapKey];
+
+                        // 根据设置决定是否去重
+                        If(
+                            removeDuplicates == 0 |
+                            Contains(values, value) == 0,
+
+                            Insert Into(values, value);
+                            valueMap[mapKey] = values;
+                        );
+                    );
+                );
             );
         );
     );
 );
 
-// 创建新的 Table
-out = New Table(
-    "LOT OPERATION Merged",
-    New Column("LOT", Character, Nominal),
-    New Column("OPERATION", Character, Nominal)
+// =====================================
+// 4. CREATE OUTPUT TABLE
+// =====================================
+
+out = New Table(outputName);
+
+// 分组列
+out << New Column(
+    groupColumn,
+    Character,
+    Nominal
 );
 
-out << Add Rows(N Items(lotList));
+// 其他列全部输出为 Character
+For(c = 1, c <= N Items(mergeColumns), c++,
 
-// 写入合并结果
-For(i = 1, i <= N Items(lotList), i++,
+    colName = mergeColumns[c];
 
-    Column(out, "LOT")[i] = lotList[i];
-
-    Column(out, "OPERATION")[i] =
-        Concat Items(opLists[i], ";");
+    If(colName != groupColumn,
+        out << New Column(
+            colName,
+            Character,
+            Nominal
+        );
+    );
 );
+
+out << Add Rows(N Items(lotOrder));
+
+// =====================================
+// 5. WRITE MERGED VALUES
+// =====================================
+
+For(g = 1, g <= N Items(lotOrder), g++,
+
+    Column(out, groupColumn)[g] = lotOrder[g];
+
+    For(c = 1, c <= N Items(mergeColumns), c++,
+
+        colName = mergeColumns[c];
+
+        If(colName != groupColumn,
+
+            mapKey = Char(g) || "|" || Char(c);
+
+            If(valueMap << Contains Item(mapKey),
+
+                values = valueMap[mapKey];
+
+                Column(out, colName)[g] =
+                    Concat Items(values, separator);
+            );
+        );
+    );
+);
+
+// =====================================
+// 6. FINISH
+// =====================================
 
 out << Bring Window To Front;
+
+Show(
+    N Rows(dt),
+    N Rows(out),
+    N Items(mergeColumns)
+);
